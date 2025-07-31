@@ -1,2 +1,3 @@
 secrets.txt
 chroma_db/
+.env
