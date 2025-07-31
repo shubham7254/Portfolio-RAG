@@ -7,7 +7,7 @@ from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 
 # Load API keys
-load_dotenv('secrets.txt')
+load_dotenv()
 
 class RAGSystem:
     def __init__(self, persist_dir: str = "chroma_db"):
