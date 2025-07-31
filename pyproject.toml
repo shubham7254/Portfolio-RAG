@@ -13,6 +13,7 @@ dependencies = [
   "uvicorn",
   "chromadb",
   "langchain",
+  "langchain-chroma",
   "openai",
   "python-dotenv",
   "pydantic",
