@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from rag_system import RAGSystem
+from src.rag_system import RAGSystem
 import uvicorn
 from typing import List, Dict
 import os
