@@ -35,7 +35,7 @@ class RAGSystem:
             raise
 
     def _create_qa_chain(self):
-    template = """
+        template = """
         You are an intelligent and professional AI assistant designed to help users explore Shubham Jagtap's portfolio. Your role is to interpret user questions and generate clear, specific, and insightful answers based entirely on the context provided.
 
 Your audience includes recruiters, collaborators, and curious professionals.
