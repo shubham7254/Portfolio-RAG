@@ -62,7 +62,7 @@ async def health_check():
         "available_documents": rag_system.get_available_documents() if rag_system else [],
     }
 
-@app.post("/chat", response_model=QueryResponse)
+@app.post("/chat")
 async def chat_with_portfolio(request: QueryRequest):
     if not rag_system:
         raise HTTPException(500, "RAG system not initialized")
@@ -75,28 +75,19 @@ async def chat_with_portfolio(request: QueryRequest):
 
         result = rag_system.query(request.question)
 
-        # Defensive check
-        if not result:
-            raise ValueError("RAG system returned None or empty result.")
+        if not result or "answer" not in result:
+            raise ValueError("RAG system did not return a valid answer.")
 
-        limited = result.get("sources", [])[: request.max_sources]
-        sources = [Source(**src) for src in limited]
-
-        return QueryResponse(
-            answer=result.get("answer", "No answer generated."),
-            sources=sources,
-            status=result.get("status", "No status."),
-            available_documents=rag_system.get_available_documents(),
-        )
+        return {"answer": result["answer"]}
 
     except Exception as e:
         print("❌ Exception in /chat endpoint:")
+        import traceback
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
             content={"error": f"Error processing query: {str(e)}"},
         )
-
 
 @app.get("/documents")
 async def get_available_documents():
