@@ -1,10 +1,11 @@
 import os
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
 
 # Load environment variables from .env
 load_dotenv()
