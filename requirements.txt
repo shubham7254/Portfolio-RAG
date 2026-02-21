@@ -2,10 +2,11 @@ fastapi
 uvicorn
 chromadb
 langchain
-langchain-chroma
 langchain-community
+langchain-chroma
+langchain-groq
 openai
 python-dotenv
-tiktoken==0.3.0  
 sentence-transformers
 pydantic
+tiktoken>=0.5.2
