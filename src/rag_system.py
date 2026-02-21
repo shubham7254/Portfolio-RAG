@@ -15,8 +15,8 @@ class RAGSystem:
         self.persist_dir = persist_dir
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         self.llm = ChatGroq(
-            groq_api_key=os.getenv("GROQ_API_KEY"),
-            model_name="llama3-70b-8192",
+            api_key=os.getenv("GROQ_API_KEY"),
+            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
             temperature=0.1,
         )
         self.vectorstore = None
