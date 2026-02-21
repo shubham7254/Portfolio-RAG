@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Rust (required for tiktoken)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && export PATH="$HOME/.cargo/bin:$PATH"  # Ensure Rust is available in the build environment
+    && source $HOME/.cargo/env \
+    && echo "source $HOME/.cargo/env" >> ~/.bashrc  # Ensures Rust is available in shell
 
 # Upgrade pip to the latest version
 RUN pip install --upgrade pip
