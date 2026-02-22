@@ -74,7 +74,7 @@ async def chat_with_portfolio(request: QueryRequest):
         print("📩 Received question:", request.question)
 
         result = rag_system.query(request.question)
-
+        print(f"RAG Query Result: {result}")  # Log the result for debugging
         if not result or "answer" not in result:
             raise ValueError("RAG system did not return a valid answer.")
 
