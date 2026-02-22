@@ -6,19 +6,22 @@ authors = [
   { name="Shubham Jagtap", email="you@example.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10,<3.13"
 
 dependencies = [
   "fastapi",
   "uvicorn",
   "chromadb",
-  "langchain",
-  "langchain-chroma",
+  "langchain==0.1.20",
+  "langchain-community==0.0.38",
+  "langchain-chroma==0.1.2",
+  "langchain-groq",
   "openai",
   "python-dotenv",
   "pydantic",
   "sentence-transformers",
-  "tiktoken"
+  "tiktoken>=0.5.2",
+  "pypdf"
 ]
 
 [tool.setuptools.packages.find]

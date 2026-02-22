@@ -5,35 +5,85 @@ from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
+from langchain.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Load environment variables from .env
 load_dotenv()
 
 class RAGSystem:
-    def __init__(self, persist_dir: str = "chroma_db"):
+    def __init__(self, persist_dir: str = "chroma_db", docs_path: str = "documents"):
         self.persist_dir = persist_dir
+        self.docs_path = docs_path
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY environment variable is not set. Please add it to your Render environment variables.")
+
         self.llm = ChatGroq(
-            api_key=os.getenv("GROQ_API_KEY"),
+            api_key=groq_api_key,
             model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
             temperature=0.1,
         )
         self.vectorstore = None
         self.qa_chain = None
-        self._load_vectorstore()
+        self._load_or_build_vectorstore()
         self._create_qa_chain()
 
-    def _load_vectorstore(self):
-        try:
-            self.vectorstore = Chroma(
-                persist_directory=self.persist_dir,
-                embedding_function=self.embeddings,
+    def _load_or_build_vectorstore(self):
+        """Load existing vectorstore or build it from documents if it doesn't exist."""
+        # Check if chroma_db directory exists and has data
+        if os.path.exists(self.persist_dir) and os.listdir(self.persist_dir):
+            try:
+                self.vectorstore = Chroma(
+                    persist_directory=self.persist_dir,
+                    embedding_function=self.embeddings,
+                )
+                # Verify it actually has documents
+                collection = self.vectorstore.get()
+                if collection and len(collection.get("ids", [])) > 0:
+                    print(f"✅ Vector database loaded from '{self.persist_dir}' with {len(collection['ids'])} chunks")
+                    return
+                else:
+                    print(f"⚠️ Vector database at '{self.persist_dir}' is empty, rebuilding...")
+            except Exception as e:
+                print(f"⚠️ Could not load existing vector database: {e}, rebuilding...")
+
+        # Build vectorstore from documents
+        self._build_vectorstore()
+
+    def _build_vectorstore(self):
+        """Build the vectorstore from PDF documents in the documents directory."""
+        if not os.path.exists(self.docs_path):
+            raise FileNotFoundError(
+                f"Documents directory '{self.docs_path}' not found. "
+                "Make sure your PDF files are in the 'documents/' folder."
             )
-            print(f"✅ Vector database loaded from '{self.persist_dir}'")
-        except Exception as e:
-            print(f"❌ Error loading vector database: {e}")
-            raise
+
+        pdf_files = [f for f in os.listdir(self.docs_path) if f.lower().endswith('.pdf')]
+        if not pdf_files:
+            raise FileNotFoundError(
+                f"No PDF files found in '{self.docs_path}'. "
+                "Add your portfolio PDFs to the 'documents/' folder."
+            )
+
+        print(f"📄 Building vector database from {len(pdf_files)} PDF(s): {pdf_files}")
+
+        loader = DirectoryLoader(self.docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
+        documents = loader.load()
+        print(f"📄 Loaded {len(documents)} pages from PDFs")
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.split_documents(documents)
+        print(f"✂️ Split into {len(chunks)} chunks")
+
+        self.vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=self.embeddings,
+            persist_directory=self.persist_dir,
+        )
+        print(f"✅ Vector database built and persisted to '{self.persist_dir}'")
 
     def _create_qa_chain(self):
         template = """
