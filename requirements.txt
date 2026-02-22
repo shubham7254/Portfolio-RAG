@@ -1,9 +1,9 @@
 fastapi
 uvicorn
 chromadb
-langchain
-langchain-community
-langchain-chroma
+langchain==0.1.20
+langchain-community==0.0.38
+langchain-chroma==0.1.2
 langchain-groq
 openai
 python-dotenv
