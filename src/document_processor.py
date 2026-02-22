@@ -28,7 +28,6 @@ class DocumentProcessor:
         vs = Chroma.from_documents(
             documents=chunks, embedding=self.embeddings, persist_directory=self.persist_dir
         )
-        vs.persist()
         return vs
 
 if __name__ == "__main__":

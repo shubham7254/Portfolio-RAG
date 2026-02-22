@@ -30,12 +30,22 @@ app.add_middleware(
 )
 
 # Initialize RAG system
-try:
-    rag_system = RAGSystem()
-    print("✅ RAG system initialized successfully")
-except Exception as e:
-    print(f"❌ Failed to initialize RAG system: {e}")
-    rag_system = None
+rag_system = None
+
+@app.on_event("startup")
+async def startup_event():
+    global rag_system
+    try:
+        print("🚀 Starting RAG system initialization...")
+        print(f"   GROQ_API_KEY set: {bool(os.getenv('GROQ_API_KEY'))}")
+        print(f"   documents/ exists: {os.path.exists('documents')}")
+        print(f"   chroma_db/ exists: {os.path.exists('chroma_db')}")
+        rag_system = RAGSystem()
+        print("✅ RAG system initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize RAG system: {e}")
+        traceback.print_exc()
+        rag_system = None
 
 # Request/Response models
 class QueryRequest(BaseModel):
@@ -65,24 +75,36 @@ async def health_check():
 @app.post("/chat")
 async def chat_with_portfolio(request: QueryRequest):
     if not rag_system:
-        raise HTTPException(500, "RAG system not initialized")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "RAG system not initialized. Check server logs for details.",
+                "hint": "Ensure GROQ_API_KEY is set and documents/ folder contains PDFs.",
+            },
+        )
 
     try:
-        if not request.question:
-            raise ValueError("No question provided in the request.")
+        if not request.question or not request.question.strip():
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No question provided in the request."},
+            )
 
-        print("📩 Received question:", request.question)
+        print(f"📩 Received question: {request.question}")
 
         result = rag_system.query(request.question)
-        print(f"RAG Query Result: {result}")  # Log the result for debugging
+        print(f"📤 RAG query status: {result.get('status', 'unknown')}")
+
         if not result or "answer" not in result:
-            raise ValueError("RAG system did not return a valid answer.")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "RAG system did not return a valid answer."},
+            )
 
         return {"answer": result["answer"]}
 
     except Exception as e:
-        print("❌ Exception in /chat endpoint:")
-        import traceback
+        print(f"❌ Exception in /chat endpoint: {e}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
