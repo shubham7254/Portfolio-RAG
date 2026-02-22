@@ -1,4 +1,5 @@
 fastapi
+pypdf
 uvicorn
 chromadb
 langchain==0.1.20
