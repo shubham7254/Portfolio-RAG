@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -33,6 +33,9 @@ class RAGSystem:
         self.qa_chain = None
         self._load_or_build_vectorstore()
         self._create_qa_chain()
+        
+        import chromadb
+        chromadb.Client().set_telemetry_enabled(False)
 
     def _load_or_build_vectorstore(self):
         """Load the vectorstore if it exists, or build it from documents if it doesn't."""
