@@ -1,12 +1,12 @@
-fastapi==0.94.0  # A version that should work with the current dependencies
-uvicorn==0.21.1
-chromadb==0.5.7
-langchain==0.0.152
-langchain-community==0.0.38
-langchain-chroma==0.1.2
-langchain-groq==0.1.0
-openai==0.27.1
-python-dotenv==0.21.0
-sentence-transformers==2.2.0
-pydantic==1.10.2
-tiktoken==0.5.2
+fastapi
+uvicorn
+chromadb
+langchain
+langchain-community
+langchain-chroma
+langchain-groq
+openai
+python-dotenv
+sentence-transformers
+pydantic
+tiktoken
