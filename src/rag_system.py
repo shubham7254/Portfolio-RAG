@@ -35,7 +35,10 @@ class RAGSystem:
         self._create_qa_chain()
         
         import chromadb
-        chromadb.Client().set_telemetry_enabled(False)
+        try:
+            chromadb.Client().set_telemetry_enabled(False)
+        except AttributeError:
+            print("❌ Telemetry disabling not supported in this version of Chroma")
 
     def _load_or_build_vectorstore(self):
         """Load the vectorstore if it exists, or build it from documents if it doesn't."""
