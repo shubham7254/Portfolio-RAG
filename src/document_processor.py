@@ -1,11 +1,12 @@
 import os
+from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings  # Free alternative
-from langchain_community.vectorstores import Chroma
-from dotenv import load_dotenv
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 load_dotenv('secrets.txt')
+load_dotenv()
 
 class DocumentProcessor:
     def __init__(
@@ -15,7 +16,6 @@ class DocumentProcessor:
     ):
         self.docs_path = docs_path
         self.persist_dir = persist_dir
-        # Use free HuggingFace embeddings instead of OpenAI
         self.embeddings = HuggingFaceEmbeddings(
             model_name="all-MiniLM-L6-v2"
         )
@@ -38,12 +38,12 @@ class DocumentProcessor:
     def create_vectorstore(self):
         docs = self.load_documents()
         chunks = self.split_documents(docs)
+        print(f"📄 Loaded {len(docs)} pages, split into {len(chunks)} chunks")
         vs = Chroma.from_documents(
             documents=chunks,
             embedding=self.embeddings,
             persist_directory=self.persist_dir
         )
-        vs.persist()
         return vs
 
 if __name__ == "__main__":

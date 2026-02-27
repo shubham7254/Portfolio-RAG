@@ -3,10 +3,12 @@ uvicorn
 chromadb
 langchain
 langchain-community
+langchain-chroma
 langchain-groq
 langchain-classic
 openai
 python-dotenv
-tiktoken
 sentence-transformers
 pydantic
+tiktoken
+pypdf

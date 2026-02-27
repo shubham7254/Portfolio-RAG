@@ -1,17 +1,20 @@
 import os
 from typing import List
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from dotenv import load_dotenv
+from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_classic.chains import RetrievalQA
 from langchain_classic.prompts import PromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
-from dotenv import load_dotenv
 
 # Load API keys
 load_dotenv('secrets.txt')
+load_dotenv()  # fallback to .env
 
 
 class FilteredRetriever(BaseRetriever):
@@ -38,35 +41,79 @@ class FilteredRetriever(BaseRetriever):
 
 
 class RAGSystem:
-    def __init__(self, persist_dir: str = "chroma_db"):
+    def __init__(self, persist_dir: str = "chroma_db", docs_path: str = "documents"):
         self.persist_dir = persist_dir
+        self.docs_path = docs_path
+        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2"
-        )
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise ValueError(
+                "GROQ_API_KEY environment variable is not set. "
+                "Please add it to your environment or secrets.txt file."
+            )
 
         self.llm = ChatGroq(
-            groq_api_key=os.getenv("GROQ_API_KEY"),
-            model_name="llama-3.3-70b-versatile",
-            temperature=0.1
+            api_key=groq_api_key,
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            temperature=0.1,
         )
 
         self.vectorstore = None
         self.qa_chain = None
-        self._load_vectorstore()
+        self._load_or_build_vectorstore()
         self._create_qa_chain()
 
-    def _load_vectorstore(self):
-        """Load the existing Chroma vector database"""
-        try:
-            self.vectorstore = Chroma(
-                persist_directory=self.persist_dir,
-                embedding_function=self.embeddings
+    def _load_or_build_vectorstore(self):
+        """Load the vectorstore if it exists, or build it from documents if it doesn't."""
+        if os.path.exists(self.persist_dir) and os.listdir(self.persist_dir):
+            try:
+                self.vectorstore = Chroma(
+                    persist_directory=self.persist_dir,
+                    embedding_function=self.embeddings,
+                )
+                collection = self.vectorstore.get()
+                if collection and len(collection.get("ids", [])) > 0:
+                    print(f"✅ Vector database loaded from '{self.persist_dir}' with {len(collection['ids'])} chunks")
+                    return
+                else:
+                    print(f"⚠️ Vector database at '{self.persist_dir}' is empty, rebuilding...")
+            except Exception as e:
+                print(f"⚠️ Could not load existing vector database: {e}, rebuilding...")
+
+        self._build_vectorstore()
+
+    def _build_vectorstore(self):
+        """Build the vectorstore from PDF documents in the documents directory."""
+        if not os.path.exists(self.docs_path):
+            raise FileNotFoundError(
+                f"Documents directory '{self.docs_path}' not found. "
+                "Make sure your PDF files are in the 'documents/' folder."
             )
-            print(f"✅ Vector database loaded from '{self.persist_dir}'")
-        except Exception as e:
-            print(f"❌ Error loading vector database: {e}")
-            raise
+
+        pdf_files = [f for f in os.listdir(self.docs_path) if f.lower().endswith('.pdf')]
+        if not pdf_files:
+            raise FileNotFoundError(
+                f"No PDF files found in '{self.docs_path}'. "
+                "Add your portfolio PDFs to the 'documents/' folder."
+            )
+
+        print(f"📄 Building vector database from {len(pdf_files)} PDF(s): {pdf_files}")
+
+        loader = DirectoryLoader(self.docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
+        documents = loader.load()
+        print(f"📄 Loaded {len(documents)} pages from PDFs")
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
+        chunks = splitter.split_documents(documents)
+        print(f"✂️ Split into {len(chunks)} chunks")
+
+        self.vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=self.embeddings,
+            persist_directory=self.persist_dir,
+        )
+        print(f"✅ Vector database built and persisted to '{self.persist_dir}'")
 
     def _create_qa_chain(self):
         """Create the question-answering chain with custom prompt"""
@@ -83,7 +130,7 @@ Context:
 Visitor's question: {question}
 
 Guidelines:
-- Answer in a natural, confident, first-person-about-them tone (e.g. "He has..." or "They have...")
+- Answer in a natural, confident tone (e.g. "He has..." or "They have...")
 - Synthesize information into a coherent answer — don't just bullet-point raw facts
 - Do NOT mention document names, file names, or where the info came from
 - Do NOT reproduce code snippets unless directly asked about code
@@ -107,90 +154,30 @@ Answer:"""
             chain_type="stuff",
             retriever=FilteredRetriever(base_retriever=base_retriever),
             chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True
+            return_source_documents=True,
         )
 
-    def query(self, question: str):
-        """
-        Process a question and return an answer with sources
-
-        Args:
-            question (str): The user's question
-
-        Returns:
-            dict: Contains 'answer' and 'sources'
-        """
+    def query(self, question: str) -> dict:
+        """Query the system with a user question."""
         try:
             response = self.qa_chain.invoke({"query": question})
-
-            sources = []
-            for doc in response.get("source_documents", []):
-                source_info = {
+            sources = [
+                {
                     "content": doc.page_content[:200] + "...",
                     "source": doc.metadata.get("source", "Unknown"),
-                    "page": doc.metadata.get("page", "N/A")
+                    "page": doc.metadata.get("page", "N/A"),
                 }
-                sources.append(source_info)
-
-            return {
-                "answer": response["result"],
-                "sources": sources,
-                "status": "success"
-            }
-
+                for doc in response.get("source_documents", [])
+            ]
+            return {"answer": response["result"], "sources": sources, "status": "success"}
         except Exception as e:
-            return {
-                "answer": f"I apologize, but I encountered an error while processing your question: {str(e)}",
-                "sources": [],
-                "status": "error"
-            }
+            return {"answer": f"I apologize, but I encountered an error: {str(e)}", "sources": [], "status": "error"}
 
-    def get_available_documents(self):
-        """Return a list of documents available in the vector database"""
+    def get_available_documents(self) -> list:
+        """Return a list of available documents in the vector store."""
         try:
             docs = self.vectorstore.get()
-            sources = set()
-            for metadata in docs.get("metadatas", []):
-                if "source" in metadata:
-                    source_file = os.path.basename(metadata["source"])
-                    sources.add(source_file)
-            return list(sources)
+            return list({os.path.basename(md["source"]) for md in docs.get("metadatas", []) if "source" in md})
         except Exception as e:
             print(f"Error getting available documents: {e}")
             return []
-
-
-def test_rag_system():
-    """Test the RAG system with sample questions"""
-
-    print("🔧 Testing RAG System...")
-    rag = RAGSystem()
-
-    test_questions = [
-        "What programming languages and technical skills does this person have?",
-        "Tell me about their machine learning or AI projects.",
-        "What is their educational background?",
-        "What research has this person conducted?"
-    ]
-
-    print(f"\n📄 Available documents: {rag.get_available_documents()}")
-
-    for i, question in enumerate(test_questions, 1):
-        print(f"\n🔍 Test Question {i}: {question}")
-        print("-" * 50)
-
-        result = rag.query(question)
-
-        if result["status"] == "success":
-            print(f"Answer: {result['answer']}")
-            print(f"\nSources: {len(result['sources'])} document(s)")
-            for j, source in enumerate(result['sources'][:2], 1):
-                print(f"  {j}. {source['source']} (page {source['page']})")
-        else:
-            print(f"Error: {result['answer']}")
-
-        print()
-
-
-if __name__ == "__main__":
-    test_rag_system()
