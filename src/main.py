@@ -1,11 +1,10 @@
 import os
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from .rag_system import RAGSystem
-import traceback
-from fastapi.responses import JSONResponse
-
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -93,15 +92,16 @@ async def chat_with_portfolio(request: QueryRequest):
         print(f"📩 Received question: {request.question}")
 
         result = rag_system.query(request.question)
+        limited_sources = result.get("sources", [])[:request.max_sources]
+
         print(f"📤 RAG query status: {result.get('status', 'unknown')}")
 
-        if not result or "answer" not in result:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "RAG system did not return a valid answer."},
-            )
-
-        return {"answer": result["answer"]}
+        return {
+            "answer": result["answer"],
+            "sources": limited_sources,
+            "status": result.get("status", "success"),
+            "available_documents": rag_system.get_available_documents(),
+        }
 
     except Exception as e:
         print(f"❌ Exception in /chat endpoint: {e}")
