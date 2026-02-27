@@ -1,5 +1,7 @@
 import os
+import asyncio
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,9 +32,10 @@ app.add_middleware(
 
 # Initialize RAG system
 rag_system = None
+_executor = ThreadPoolExecutor(max_workers=1)
 
-@app.on_event("startup")
-async def startup_event():
+def _init_rag():
+    """Run RAG initialization in a thread so it doesn't block startup."""
     global rag_system
     try:
         print("🚀 Starting RAG system initialization...")
@@ -45,6 +48,12 @@ async def startup_event():
         print(f"❌ Failed to initialize RAG system: {e}")
         traceback.print_exc()
         rag_system = None
+
+@app.on_event("startup")
+async def startup_event():
+    """Start RAG initialization in the background so Railway health checks pass immediately."""
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_executor, _init_rag)
 
 # Request/Response models
 class QueryRequest(BaseModel):
