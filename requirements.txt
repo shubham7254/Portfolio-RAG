@@ -2,6 +2,9 @@ fastapi
 uvicorn
 chromadb
 langchain
+langchain-community
+langchain-groq
+langchain-classic
 openai
 python-dotenv
 tiktoken
