@@ -6,6 +6,7 @@ langchain-community
 langchain-chroma
 langchain-groq
 langchain-classic
+langchain-text-splitters
 openai
 python-dotenv
 sentence-transformers
