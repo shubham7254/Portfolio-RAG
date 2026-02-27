@@ -5,7 +5,7 @@ from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.chains import RetrievalQA
 from langchain_classic.prompts import PromptTemplate
 from langchain_core.retrievers import BaseRetriever
