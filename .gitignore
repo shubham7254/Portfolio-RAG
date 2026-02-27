@@ -2,8 +2,6 @@
 secrets.txt
 .env
 
-# ChromaDB persistence
-chroma_db/
 
 # MacOS
 .DS_Store
