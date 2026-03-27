@@ -3,7 +3,7 @@ from typing import List
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.chains import RetrievalQA
@@ -44,7 +44,10 @@ class RAGSystem:
     def __init__(self, persist_dir: str = "chroma_db", docs_path: str = "documents"):
         self.persist_dir = persist_dir
         self.docs_path = docs_path
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
+            api_key=os.getenv("HF_TOKEN", ""),
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+        )
 
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
