@@ -165,7 +165,7 @@ Answer:"""
                 {
                     "content": doc.page_content[:200] + "...",
                     "source": doc.metadata.get("source", "Unknown"),
-                    "page": doc.metadata.get("page", "N/A"),
+                    "page": str(doc.metadata.get("page", "N/A")),
                 }
                 for doc in response.get("source_documents", [])
             ]
