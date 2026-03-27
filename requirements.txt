@@ -4,5 +4,4 @@ langchain-core
 langchain-groq
 python-dotenv
 pydantic
-numpy
-requests
+rank-bm25

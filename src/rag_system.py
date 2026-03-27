@@ -1,24 +1,15 @@
 import os
 import json
-import requests
-import numpy as np
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
+from rank_bm25 import BM25Okapi
 
 # Load API keys
 load_dotenv('secrets.txt')
 load_dotenv()  # fallback to .env
 
 VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "vectorstore")
-HF_EMBED_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
-
-
-def _cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
-    """Return cosine similarity between query_vec and each row of matrix."""
-    q = query_vec / (np.linalg.norm(query_vec) + 1e-10)
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
-    return (matrix / norms) @ q
 
 
 class RAGSystem:
@@ -30,26 +21,27 @@ class RAGSystem:
                 "Please add it to your environment or secrets.txt file."
             )
 
-        self.hf_token = os.getenv("HF_TOKEN", "")
         self.llm = ChatGroq(
             api_key=groq_api_key,
             model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             temperature=0.1,
         )
 
-        emb_path = os.path.join(VECTORSTORE_DIR, "embeddings.npy")
         doc_path = os.path.join(VECTORSTORE_DIR, "documents.json")
-        if not os.path.exists(emb_path) or not os.path.exists(doc_path):
+        if not os.path.exists(doc_path):
             raise FileNotFoundError(
-                f"Vectorstore files not found in '{VECTORSTORE_DIR}/'. "
-                "Expected embeddings.npy and documents.json."
+                f"Vectorstore file not found: '{doc_path}'. "
+                "Expected documents.json."
             )
 
-        self.embeddings_matrix = np.load(emb_path)  # (N, 384)
         with open(doc_path, "r") as f:
             self.documents = json.load(f)
 
-        print(f"✅ Loaded {len(self.documents)} chunks from vectorstore")
+        # Build BM25 index from document text — no model loading, no external API
+        tokenized_corpus = [doc["text"].lower().split() for doc in self.documents]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+
+        print(f"✅ Loaded {len(self.documents)} chunks into BM25 index")
 
         self.prompt = PromptTemplate(
             template="""You are a smart AI assistant on a personal portfolio website. \
@@ -75,30 +67,11 @@ Answer:""",
             input_variables=["context", "question"],
         )
 
-    def _embed_query(self, text: str) -> np.ndarray:
-        """Embed a query string using the HuggingFace Inference API."""
-        headers = {}
-        if self.hf_token:
-            headers["Authorization"] = f"Bearer {self.hf_token}"
-        response = requests.post(
-            HF_EMBED_URL,
-            headers=headers,
-            json={"inputs": text},
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-        # HF returns (seq_len, dim) for feature-extraction — mean pool to (dim,)
-        arr = np.array(result, dtype=np.float32)
-        if arr.ndim == 2:
-            arr = arr.mean(axis=0)
-        return arr
-
     def _retrieve(self, query: str, k: int = 6):
-        """Return top-k most similar documents via cosine similarity."""
-        query_vec = self._embed_query(query)
-        scores = _cosine_similarity(query_vec, self.embeddings_matrix)
-        top_k = np.argsort(scores)[::-1][:k]
+        """Return top-k most relevant documents via BM25."""
+        tokenized_query = query.lower().split()
+        scores = self.bm25.get_scores(tokenized_query)
+        top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
         return [self.documents[i] for i in top_k]
 
     def query(self, question: str) -> dict:
