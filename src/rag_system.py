@@ -11,7 +11,7 @@ load_dotenv('secrets.txt')
 load_dotenv()  # fallback to .env
 
 VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "vectorstore")
-HF_EMBED_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+HF_EMBED_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
