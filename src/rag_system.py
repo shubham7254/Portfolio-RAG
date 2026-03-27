@@ -3,7 +3,6 @@ import json
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
-from rank_bm25 import BM25Okapi
 
 # Load API keys
 load_dotenv('secrets.txt')
@@ -31,68 +30,83 @@ class RAGSystem:
         if not os.path.exists(doc_path):
             raise FileNotFoundError(
                 f"Vectorstore file not found: '{doc_path}'. "
-                "Expected documents.json."
+                "Expected documents.json in vectorstore directory."
             )
 
         with open(doc_path, "r") as f:
-            self.documents = json.load(f)
+            documents = json.load(f)
 
-        # Build BM25 index from document text — no model loading, no external API
-        tokenized_corpus = [doc["text"].lower().split() for doc in self.documents]
-        self.bm25 = BM25Okapi(tokenized_corpus)
+        # Pre-build full context string once at startup — no retrieval step needed.
+        # Groq's llama-3.3-70b-versatile supports 128K tokens; all 70 chunks
+        # total ~24K tokens so the entire knowledge base fits in one LLM call.
+        self.full_context = "\n\n---\n\n".join(doc["text"] for doc in documents)
+        self.document_sources = [
+            {"source": doc["source"], "page": doc["page"]}
+            for doc in documents
+        ]
 
-        print(f"✅ Loaded {len(self.documents)} chunks into BM25 index")
+        print(
+            f"✅ Loaded {len(documents)} chunks "
+            f"({len(self.full_context):,} chars) into full-context RAG"
+        )
 
         self.prompt = PromptTemplate(
             template="""You are a smart AI assistant on a personal portfolio website. \
 A visitor is asking about the person who owns this portfolio.
 
-Use the context below — drawn from their resume, project reports, and research — \
-to give a helpful, intelligent answer. Synthesize the information rather than just listing it.
+Below is the complete knowledge base — resume, project reports, and research — \
+about this person. Read it carefully and answer the visitor's question with \
+full understanding of the context.
 
-Context:
+Knowledge base:
 {context}
 
 Visitor's question: {question}
 
 Guidelines:
 - Answer in a natural, confident tone (e.g. "He has..." or "They have...")
-- Synthesize information into a coherent answer — don't just bullet-point raw facts
+- Synthesize information into a coherent, focused answer
 - Do NOT mention document names, file names, or where the info came from
 - Do NOT reproduce code snippets unless directly asked about code
-- If the context is insufficient, say so briefly and helpfully
-- Keep the answer focused and conversational — suitable for a chat widget on a portfolio site
+- If the knowledge base doesn't contain enough info, say so briefly and helpfully
+- Keep the answer conversational — suitable for a chat widget on a portfolio site
 
 Answer:""",
             input_variables=["context", "question"],
         )
 
-    def _retrieve(self, query: str, k: int = 6):
-        """Return top-k most relevant documents via BM25."""
-        tokenized_query = query.lower().split()
-        scores = self.bm25.get_scores(tokenized_query)
-        top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-        return [self.documents[i] for i in top_k]
-
     def query(self, question: str) -> dict:
-        """Query the system with a user question."""
+        """Query the RAG system. The LLM receives the full knowledge base and
+        semantically understands the question to produce an accurate answer."""
         try:
-            relevant_docs = self._retrieve(question)
-            context = "\n\n---\n\n".join(doc["text"] for doc in relevant_docs)
-            prompt_text = self.prompt.format(context=context, question=question)
+            prompt_text = self.prompt.format(
+                context=self.full_context,
+                question=question,
+            )
             response = self.llm.invoke(prompt_text)
-            sources = [
-                {
-                    "content": doc["text"][:200] + "...",
-                    "source": doc["source"],
-                    "page": doc["page"],
-                }
-                for doc in relevant_docs[:3]
-            ]
-            return {"answer": response.content, "sources": sources, "status": "success"}
+            # Return the top 3 unique source documents as references
+            seen = set()
+            sources = []
+            for s in self.document_sources:
+                key = os.path.basename(s["source"])
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(s)
+                if len(sources) == 3:
+                    break
+
+            return {
+                "answer": response.content,
+                "sources": sources,
+                "status": "success",
+            }
         except Exception as e:
-            return {"answer": f"I apologize, but I encountered an error: {str(e)}", "sources": [], "status": "error"}
+            return {
+                "answer": f"I apologize, but I encountered an error: {str(e)}",
+                "sources": [],
+                "status": "error",
+            }
 
     def get_available_documents(self) -> list:
         """Return unique document names from the vectorstore."""
-        return list({os.path.basename(doc["source"]) for doc in self.documents})
+        return list({os.path.basename(s["source"]) for s in self.document_sources})
