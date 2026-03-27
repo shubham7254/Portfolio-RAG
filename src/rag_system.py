@@ -1,54 +1,28 @@
 import os
-from typing import List
+import json
+import requests
+import numpy as np
 from dotenv import load_dotenv
-from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_classic.chains import RetrievalQA
-from langchain_classic.prompts import PromptTemplate
-from langchain_core.retrievers import BaseRetriever
-from langchain_core.documents import Document
-from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
+from langchain.prompts import PromptTemplate
 
 # Load API keys
 load_dotenv('secrets.txt')
 load_dotenv()  # fallback to .env
 
+VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "vectorstore")
+HF_EMBED_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
 
-class FilteredRetriever(BaseRetriever):
-    """Wraps a base retriever and removes code-heavy chunks before they reach the LLM."""
-    base_retriever: object
 
-    def _is_code_heavy(self, text: str) -> bool:
-        # Check character density
-        code_chars = sum(1 for c in text if c in '(){}[]<>=;:/\\|#@$%^&*')
-        if (code_chars / max(len(text), 1)) > 0.10:
-            return True
-        # Check for code keywords
-        code_keywords = ['def ', 'import ', 'return ', 'sorted(', 'lambda ', 'list(', '.keys()', 'for ', 'if __']
-        matches = sum(1 for kw in code_keywords if kw in text)
-        return matches >= 2
-
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun = None
-    ) -> List[Document]:
-        docs = self.base_retriever.invoke(query)
-        filtered = [doc for doc in docs if not self._is_code_heavy(doc.page_content)]
-        # Fall back to all docs if everything got filtered out
-        return filtered if filtered else docs
+def _cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+    """Return cosine similarity between query_vec and each row of matrix."""
+    q = query_vec / (np.linalg.norm(query_vec) + 1e-10)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
+    return (matrix / norms) @ q
 
 
 class RAGSystem:
-    def __init__(self, persist_dir: str = "chroma_db", docs_path: str = "documents"):
-        self.persist_dir = persist_dir
-        self.docs_path = docs_path
-        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
-            api_key=os.getenv("HF_TOKEN", ""),
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-        )
-
+    def __init__(self):
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
             raise ValueError(
@@ -56,72 +30,29 @@ class RAGSystem:
                 "Please add it to your environment or secrets.txt file."
             )
 
+        self.hf_token = os.getenv("HF_TOKEN", "")
         self.llm = ChatGroq(
             api_key=groq_api_key,
             model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             temperature=0.1,
         )
 
-        self.vectorstore = None
-        self.qa_chain = None
-        self._load_or_build_vectorstore()
-        self._create_qa_chain()
-
-    def _load_or_build_vectorstore(self):
-        """Load the vectorstore if it exists, or build it from documents if it doesn't."""
-        if os.path.exists(self.persist_dir) and os.listdir(self.persist_dir):
-            try:
-                self.vectorstore = Chroma(
-                    persist_directory=self.persist_dir,
-                    embedding_function=self.embeddings,
-                )
-                collection = self.vectorstore.get()
-                if collection and len(collection.get("ids", [])) > 0:
-                    print(f"✅ Vector database loaded from '{self.persist_dir}' with {len(collection['ids'])} chunks")
-                    return
-                else:
-                    print(f"⚠️ Vector database at '{self.persist_dir}' is empty, rebuilding...")
-            except Exception as e:
-                print(f"⚠️ Could not load existing vector database: {e}, rebuilding...")
-
-        self._build_vectorstore()
-
-    def _build_vectorstore(self):
-        """Build the vectorstore from PDF documents in the documents directory."""
-        if not os.path.exists(self.docs_path):
+        emb_path = os.path.join(VECTORSTORE_DIR, "embeddings.npy")
+        doc_path = os.path.join(VECTORSTORE_DIR, "documents.json")
+        if not os.path.exists(emb_path) or not os.path.exists(doc_path):
             raise FileNotFoundError(
-                f"Documents directory '{self.docs_path}' not found. "
-                "Make sure your PDF files are in the 'documents/' folder."
+                f"Vectorstore files not found in '{VECTORSTORE_DIR}/'. "
+                "Expected embeddings.npy and documents.json."
             )
 
-        pdf_files = [f for f in os.listdir(self.docs_path) if f.lower().endswith('.pdf')]
-        if not pdf_files:
-            raise FileNotFoundError(
-                f"No PDF files found in '{self.docs_path}'. "
-                "Add your portfolio PDFs to the 'documents/' folder."
-            )
+        self.embeddings_matrix = np.load(emb_path)  # (N, 384)
+        with open(doc_path, "r") as f:
+            self.documents = json.load(f)
 
-        print(f"📄 Building vector database from {len(pdf_files)} PDF(s): {pdf_files}")
+        print(f"✅ Loaded {len(self.documents)} chunks from vectorstore")
 
-        loader = DirectoryLoader(self.docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
-        documents = loader.load()
-        print(f"📄 Loaded {len(documents)} pages from PDFs")
-
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
-        chunks = splitter.split_documents(documents)
-        print(f"✂️ Split into {len(chunks)} chunks")
-
-        self.vectorstore = Chroma.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            persist_directory=self.persist_dir,
-        )
-        print(f"✅ Vector database built and persisted to '{self.persist_dir}'")
-
-    def _create_qa_chain(self):
-        """Create the question-answering chain with custom prompt"""
-
-        template = """You are a smart AI assistant on a personal portfolio website. \
+        self.prompt = PromptTemplate(
+            template="""You are a smart AI assistant on a personal portfolio website. \
 A visitor is asking about the person who owns this portfolio.
 
 Use the context below — drawn from their resume, project reports, and research — \
@@ -140,47 +71,55 @@ Guidelines:
 - If the context is insufficient, say so briefly and helpfully
 - Keep the answer focused and conversational — suitable for a chat widget on a portfolio site
 
-Answer:"""
-
-        prompt = PromptTemplate(
-            template=template,
-            input_variables=["context", "question"]
+Answer:""",
+            input_variables=["context", "question"],
         )
 
-        base_retriever = self.vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 6, "fetch_k": 20}
+    def _embed_query(self, text: str) -> np.ndarray:
+        """Embed a query string using the HuggingFace Inference API."""
+        headers = {}
+        if self.hf_token:
+            headers["Authorization"] = f"Bearer {self.hf_token}"
+        response = requests.post(
+            HF_EMBED_URL,
+            headers=headers,
+            json={"inputs": text},
+            timeout=15,
         )
+        response.raise_for_status()
+        result = response.json()
+        # HF returns (seq_len, dim) for feature-extraction — mean pool to (dim,)
+        arr = np.array(result, dtype=np.float32)
+        if arr.ndim == 2:
+            arr = arr.mean(axis=0)
+        return arr
 
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=FilteredRetriever(base_retriever=base_retriever),
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True,
-        )
+    def _retrieve(self, query: str, k: int = 6):
+        """Return top-k most similar documents via cosine similarity."""
+        query_vec = self._embed_query(query)
+        scores = _cosine_similarity(query_vec, self.embeddings_matrix)
+        top_k = np.argsort(scores)[::-1][:k]
+        return [self.documents[i] for i in top_k]
 
     def query(self, question: str) -> dict:
         """Query the system with a user question."""
         try:
-            response = self.qa_chain.invoke({"query": question})
+            relevant_docs = self._retrieve(question)
+            context = "\n\n---\n\n".join(doc["text"] for doc in relevant_docs)
+            prompt_text = self.prompt.format(context=context, question=question)
+            response = self.llm.invoke(prompt_text)
             sources = [
                 {
-                    "content": doc.page_content[:200] + "...",
-                    "source": doc.metadata.get("source", "Unknown"),
-                    "page": str(doc.metadata.get("page", "N/A")),
+                    "content": doc["text"][:200] + "...",
+                    "source": doc["source"],
+                    "page": doc["page"],
                 }
-                for doc in response.get("source_documents", [])
+                for doc in relevant_docs[:3]
             ]
-            return {"answer": response["result"], "sources": sources, "status": "success"}
+            return {"answer": response.content, "sources": sources, "status": "success"}
         except Exception as e:
             return {"answer": f"I apologize, but I encountered an error: {str(e)}", "sources": [], "status": "error"}
 
     def get_available_documents(self) -> list:
-        """Return a list of available documents in the vector store."""
-        try:
-            docs = self.vectorstore.get()
-            return list({os.path.basename(md["source"]) for md in docs.get("metadatas", []) if "source" in md})
-        except Exception as e:
-            print(f"Error getting available documents: {e}")
-            return []
+        """Return unique document names from the vectorstore."""
+        return list({os.path.basename(doc["source"]) for doc in self.documents})
