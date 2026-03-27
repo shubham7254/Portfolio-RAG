@@ -21,7 +21,6 @@ class RAGSystem:
                 "Please add it to your environment or secrets.txt file."
             )
 
-        # Use the fast 8b model — higher TPM limit, lower latency
         model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         self.llm = ChatGroq(api_key=groq_api_key, model=model, temperature=0.1)
 
@@ -35,16 +34,28 @@ class RAGSystem:
         with open(doc_path, "r") as f:
             self.documents = json.load(f)
 
-        # Build BM25 index over document text
-        tokenized_corpus = [doc["text"].lower().split() for doc in self.documents]
+        # Separate resume chunks (always included) from the rest
+        self.resume_chunks = [
+            doc for doc in self.documents if "Resume" in doc["source"]
+        ]
+        other_chunks = [
+            doc for doc in self.documents if "Resume" not in doc["source"]
+        ]
+
+        # BM25 index over non-resume documents only
+        tokenized_corpus = [doc["text"].lower().split() for doc in other_chunks]
         self.bm25 = BM25Okapi(tokenized_corpus)
+        self.other_chunks = other_chunks
 
-        print(f"✅ Loaded {len(self.documents)} chunks into BM25 index")
+        print(
+            f"✅ Loaded {len(self.documents)} chunks "
+            f"({len(self.resume_chunks)} resume + {len(other_chunks)} project/research)"
+        )
 
-        # Prompt 1: extract search keywords from the user question (tiny call)
+        # Prompt 1: extract search keywords from the question (tiny call ~100 tokens)
         self.keyword_prompt = PromptTemplate(
             template="""Extract 6-10 specific search keywords from this question that would \
-help find relevant information in a resume or portfolio.
+help find relevant information in project reports and research papers.
 Return ONLY the keywords separated by spaces, nothing else.
 
 Question: {question}
@@ -52,13 +63,13 @@ Keywords:""",
             input_variables=["question"],
         )
 
-        # Prompt 2: answer using retrieved context
+        # Prompt 2: answer using full profile context
         self.answer_prompt = PromptTemplate(
-            template="""You are a smart AI assistant on a personal portfolio website. \
-A visitor is asking about the person who owns this portfolio.
+            template="""You are a smart AI assistant on Shubham Jagtap's portfolio website. \
+Visitors ask about his background, skills, projects, and experience.
 
-Use the context below — drawn from their resume, project reports, and research — \
-to give a helpful, intelligent answer.
+Use the context below to answer the visitor's question. The context includes his \
+full resume plus relevant project/research excerpts.
 
 Context:
 {context}
@@ -66,43 +77,49 @@ Context:
 Visitor's question: {question}
 
 Guidelines:
-- Answer in a natural, confident tone (e.g. "He has..." or "They have...")
-- Synthesize information into a coherent answer — don't just bullet-point raw facts
+- Always answer based on what IS in the context — never say "not mentioned" or "not found"
+- If someone asks about experience, calculate or infer from education dates, projects, \
+  and skills (e.g. "He has been building AI projects since X, currently pursuing his MS...")
+- Answer in a natural, confident tone in third person ("He has...", "Shubham...")
+- Synthesize into a coherent answer — don't just list raw facts
 - Do NOT mention document names, file names, or where the info came from
-- Do NOT reproduce code snippets unless directly asked about code
-- If the context is insufficient, say so briefly and helpfully
-- Keep the answer focused and conversational — suitable for a chat widget
+- Keep the answer conversational and concise — suitable for a portfolio chat widget
 
 Answer:""",
             input_variables=["context", "question"],
         )
 
-    def _expand_and_retrieve(self, question: str, k: int = 8):
+    def _retrieve(self, question: str, k: int = 5):
         """
-        Two-step semantic retrieval:
-        1. LLM expands the question into domain-specific keywords (~100 tokens)
-        2. BM25 retrieves top-k chunks using those keywords
+        Retrieval strategy:
+        - Always include all resume chunks (3 chunks, full profile context)
+        - LLM expands question → BM25 finds top-k relevant project/research chunks
+        - Combined context stays well under 12K TPM limit
         """
-        # Step 1: semantic query expansion via LLM
+        # Step 1: LLM keyword expansion for BM25
         keyword_prompt = self.keyword_prompt.format(question=question)
         keywords_response = self.llm.invoke(keyword_prompt)
         expanded_query = keywords_response.content.strip()
 
-        # Step 2: BM25 retrieval with expanded keywords
+        # Step 2: BM25 over project/research docs
         tokenized_query = expanded_query.lower().split()
         scores = self.bm25.get_scores(tokenized_query)
         top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-        return [self.documents[i] for i in top_k]
+        project_docs = [self.other_chunks[i] for i in top_k]
+
+        # Resume always first so LLM sees full profile before project details
+        return self.resume_chunks + project_docs
 
     def query(self, question: str) -> dict:
         """
-        Full RAG pipeline:
-          question → LLM keyword expansion → BM25 retrieval → LLM answer
-        Total tokens per request: ~200 (expansion) + ~3000 (answer) = ~3200
-        Well under Groq free tier 12K TPM limit.
+        RAG pipeline:
+          question
+            → LLM keyword expansion (~100 tokens)
+            → resume chunks (always) + BM25 top-5 project chunks
+            → LLM generates answer (~3-4K tokens total)
         """
         try:
-            relevant_docs = self._expand_and_retrieve(question)
+            relevant_docs = self._retrieve(question)
             context = "\n\n---\n\n".join(doc["text"] for doc in relevant_docs)
             answer_prompt = self.answer_prompt.format(
                 context=context, question=question
