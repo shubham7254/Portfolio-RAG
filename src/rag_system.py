@@ -4,7 +4,7 @@ import requests
 import numpy as np
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 # Load API keys
 load_dotenv('secrets.txt')
