@@ -1,15 +1,18 @@
 import os
-import json
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
-from rank_bm25 import BM25Okapi
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 # Load API keys
 load_dotenv('secrets.txt')
 load_dotenv()  # fallback to .env
 
-VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "vectorstore")
+CHROMA_DIR = os.getenv("CHROMA_DIR", "chroma_db")
+# Must match the embedding model used in document_processor.py when the
+# chroma_db/ folder was built — otherwise similarity search will be nonsense.
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 
 class RAGSystem:
@@ -24,19 +27,22 @@ class RAGSystem:
         model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         self.llm = ChatGroq(api_key=groq_api_key, model=model, temperature=0.1)
 
-        doc_path = os.path.join(VECTORSTORE_DIR, "documents.json")
-        if not os.path.exists(doc_path):
+        if not os.path.exists(CHROMA_DIR):
             raise FileNotFoundError(
-                f"Vectorstore file not found: '{doc_path}'. "
-                "Expected documents.json in vectorstore directory."
+                f"Chroma vector store not found at '{CHROMA_DIR}'. "
+                "Run document_processor.py first to build it."
             )
-        with open(doc_path, "r") as f:
-            self.documents = json.load(f)
 
-        # Build BM25 index over document text
-        tokenized_corpus = [doc["text"].lower().split() for doc in self.documents]
-        self.bm25 = BM25Okapi(tokenized_corpus)
-        print(f"✅ Loaded {len(self.documents)} chunks into BM25 index")
+        # Same embedding model used to build the store — required for
+        # similarity search to produce meaningful results.
+        self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+        self.vectorstore = Chroma(
+            persist_directory=CHROMA_DIR,
+            embedding_function=self.embeddings,
+        )
+
+        collection_count = self.vectorstore._collection.count()
+        print(f"✅ Loaded Chroma vector store with {collection_count} chunks")
 
         # Prompt 0: rewrite a follow-up question into a self-contained one using history
         self.rewrite_prompt = PromptTemplate(
@@ -54,24 +60,14 @@ Rewritten question:""",
             input_variables=["history", "question"],
         )
 
-        # Prompt 1: extract search keywords from the user question (tiny call)
-        self.keyword_prompt = PromptTemplate(
-            template="""Extract 6-10 specific search keywords from this question that would \
-help find relevant information in a resume or portfolio.
-Return ONLY the keywords separated by spaces, nothing else.
-Question: {question}
-Keywords:""",
-            input_variables=["question"],
-        )
-
-        # Prompt 2: answer using retrieved context + conversation history
+        # Prompt: answer using retrieved context + conversation history
         self.answer_prompt = PromptTemplate(
             template="""You are a smart AI assistant on a personal portfolio website. \
 A visitor is asking about the person who owns this portfolio.
 Use the context below — drawn from their resume, project reports, and research — \
 to give a helpful, intelligent answer.
 
-Recent conversation (for context, may be empty):
+Recent conversation (for context only, may be empty):
 {history}
 
 Context:
@@ -80,13 +76,19 @@ Context:
 Visitor's question: {question}
 
 Guidelines:
+- Answer ONLY what was specifically asked — do not summarize unrelated projects, \
+skills, or background that the question didn't ask about
+- If the question is a follow-up (e.g. "tell me more about that", "the first one"), \
+give a focused deep-dive on that ONE specific thing only — do not re-list everything \
+mentioned earlier in the conversation
 - Answer in a natural, confident tone (e.g. "He has..." or "They have...")
 - Synthesize information into a coherent answer — don't just bullet-point raw facts
 - Use the recent conversation only to understand what the visitor means; don't repeat it back
 - Do NOT mention document names, file names, or where the info came from
 - Do NOT reproduce code snippets unless directly asked about code
 - If the context is insufficient, say so briefly and helpfully
-- Keep the answer focused and conversational — suitable for a chat widget
+- Keep the answer concise, focused, and conversational — suitable for a chat widget \
+(a few sentences to one short paragraph, not an exhaustive report)
 
 Answer:""",
             input_variables=["history", "context", "question"],
@@ -119,27 +121,18 @@ Answer:""",
             # If rewriting fails for any reason, fall back to the original question
             return question
 
-    def _expand_and_retrieve(self, question: str, k: int = 8):
+    def _retrieve(self, question: str, k: int = 5):
         """
-        Two-step semantic retrieval:
-        1. LLM expands the question into domain-specific keywords (~100 tokens)
-        2. BM25 retrieves top-k chunks using those keywords
+        Semantic retrieval via Chroma: embeds the question and finds the
+        k chunks whose meaning is closest, regardless of exact word overlap.
         """
-        # Step 1: semantic query expansion via LLM
-        keyword_prompt = self.keyword_prompt.format(question=question)
-        keywords_response = self.llm.invoke(keyword_prompt)
-        expanded_query = keywords_response.content.strip()
-
-        # Step 2: BM25 retrieval with expanded keywords
-        tokenized_query = expanded_query.lower().split()
-        scores = self.bm25.get_scores(tokenized_query)
-        top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-        return [self.documents[i] for i in top_k]
+        results = self.vectorstore.similarity_search(question, k=k)
+        return results  # list of LangChain Document objects (.page_content, .metadata)
 
     def query(self, question: str, history: list = None) -> dict:
         """
         Full RAG pipeline with optional multi-turn memory:
-          question (+history) → rewrite → LLM keyword expansion → BM25 retrieval → LLM answer
+          question (+history) → rewrite → Chroma semantic search → LLM answer
 
         `history` is a list of {"role": "user"|"assistant", "content": str}, oldest first.
         Pass None or [] for a stateless, single-turn call (backwards compatible).
@@ -147,24 +140,31 @@ Answer:""",
         try:
             history_text = self._format_history(history or [])
 
-            # Make follow-up questions self-contained before retrieval
+            # Make follow-up questions self-contained — use this same rewritten
+            # version for BOTH retrieval and the final answer, so the model
+            # answers the specific, resolved question rather than the raw
+            # (possibly vague) follow-up phrasing.
             search_question = self._rewrite_question(question, history_text)
 
-            relevant_docs = self._expand_and_retrieve(search_question)
-            context = "\n\n---\n\n".join(doc["text"] for doc in relevant_docs)
+            relevant_docs = self._retrieve(search_question)
+            context = "\n\n---\n\n".join(doc.page_content for doc in relevant_docs)
 
             answer_prompt = self.answer_prompt.format(
-                history=history_text, context=context, question=question
+                history=history_text, context=context, question=search_question
             )
             response = self.llm.invoke(answer_prompt)
 
             sources = []
             seen = set()
             for doc in relevant_docs:
-                key = os.path.basename(doc["source"])
+                source = doc.metadata.get("source", "unknown")
+                key = os.path.basename(source)
                 if key not in seen:
                     seen.add(key)
-                    sources.append({"source": doc["source"], "page": doc["page"]})
+                    sources.append({
+                        "source": source,
+                        "page": str(doc.metadata.get("page", "")),
+                    })
                 if len(sources) == 3:
                     break
 
@@ -181,7 +181,11 @@ Answer:""",
             }
 
     def get_available_documents(self) -> list:
-        """Return unique document names from the vectorstore."""
-        return list(
-            {os.path.basename(doc["source"]) for doc in self.documents}
-        )
+        """Return unique document names from the vector store."""
+        all_docs = self.vectorstore.get()
+        sources = {
+            os.path.basename(meta.get("source", ""))
+            for meta in all_docs.get("metadatas", [])
+            if meta.get("source")
+        }
+        return list(sources)
